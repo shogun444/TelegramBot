@@ -18,7 +18,7 @@ model Videos{
   id Int @id @default(autoincrement())
  file_id String @unique
    file_name String 
-   duration  Int 
+   duration  Int? 
    file_size  Int? @default(0)
    thumbnail  String?
   link String?
@@ -28,5 +28,5 @@ model Videos{
   mime_type  String?
   width Int?
 height Int? 
-
+tmdb_id       Int?
 }

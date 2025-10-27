@@ -1,7 +1,7 @@
 export type Video = {
     file_id: string;
     file_name: string;
-    duration?: number;
+    duration?: number | null;
     file_size?: number | undefined | null;
     thumbnail?: any;
     link?: string;
