@@ -2,7 +2,6 @@ import express from "express";
 import dotenv from "dotenv";
 import bot from "./bot.js";
 import { prisma } from "./prisma.js";
-import axios, {} from "axios";
 import cors from 'cors';
 dotenv.config();
 const app = express();
@@ -23,22 +22,10 @@ app.get('/allvideos', async (req, res) => {
 (async () => {
     try {
         await bot.launch();
-        console.log("Bot started!");
+        console.log("🚀 Telegram bot launched successfully!");
     }
     catch (err) {
-        const hasDescription = typeof err === "object" && err !== null && "description" in err;
-        const hasErrorCode = typeof err === "object" && err !== null && "error_code" in err;
-        const description = hasDescription ? err.description : "";
-        const error_code = hasErrorCode ? err.error_code : undefined;
-        if (description.includes("Conflict: terminated by other getUpdates request") ||
-            error_code === 409) {
-            console.error(" Another instance is running. Exiting gracefully.");
-            process.exit(0);
-        }
-        else {
-            console.error("Bot crashed:", err);
-            process.exit(1);
-        }
+        console.error("❌ Failed to launch bot:", err);
     }
 })();
 app.listen(3001, () => {

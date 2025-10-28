@@ -2,6 +2,7 @@ import { Context, Telegraf } from 'telegraf';
 import dotenv from "dotenv";
 import { prisma } from './prisma.js';
 import axios from 'axios';
+import stringSimilarity from 'string-similarity';
 dotenv.config();
 export const bot = new Telegraf(process.env.BOT_TOKEN);
 const channel_Id = -1003106470314;
@@ -13,7 +14,7 @@ bot.start(async (ctx) => {
     }
     const messageId = parseInt(payload, 10);
     try {
-        await ctx.telegram.forwardMessage(userId, channel_Id, messageId);
+        await ctx.telegram.copyMessage(userId, channel_Id, messageId);
         ctx.reply("Movie sent! Enjoy.");
     }
     catch (err) {
@@ -35,24 +36,33 @@ bot.on("channel_post", async (ctx) => {
             const width = video.width;
             const height = video.height;
             const chat_id = String(ctx.channelPost.chat.id);
-            const cleanTitle = file_name.replace(/\.(mkv|mp4|avi)$/i, "")
-                // Remove leading junk (e.g., savefilm21_info_, _𝐓𝐆_:_@)
-                .replace(/^.*?[_:]+/, "")
-                // Replace _ and . with space
+            const cleanTitle = file_name
+                // Remove file extension
+                .replace(/\.(mkv|mp4|avi)$/i, "")
+                // Replace dots and underscores with spaces
                 .replace(/[_\.]+/g, " ")
-                // Remove everything after year (first 4-digit number in 1900-2099 range)
-                .replace(/\b(19|20)\d{2}\b.*$/, "")
-                // Remove left-over tags (resolution, codecs, etc.)
-                .replace(/\b(720p|1080p|2160p|480p|360p|ZEE5|WEB ?DL|WEB ?Rip|BluRay|DS4K|x264|x265|H\.?265|HEVC|AAC2?\.?0?|DDP\S*|ESub|Tagalog|Hindi|Telugu|AAC|H264|H265|Archie|AMZN|BONE|J0NA|HDRip|10Bit|HC)\b/gi, "")
+                // Remove common junk tags (quality, codecs, sites, etc.)
+                .replace(/\b(720p|1080p|2160p|480p|WEB\s?DL|WEB\s?Rip|BluRay|x264|x265|H\.?265|HEVC|AAC2?\.?0?|DDP\S*|ESubs?|Tagalog|Hindi|Telugu|AMZN|HDRip|10Bit|HC|DS4K|Pahe|in|GTM|MULTI|Removed|World)\b/gi, "")
+                // Remove all numbers (even years, episode numbers, etc.)
+                .replace(/\b\d+\b/g, "")
+                // Remove brackets, dashes, leftover punctuation
+                .replace(/[\(\)\[\]\-]/g, " ")
                 // Clean up extra spaces
                 .replace(/\s+/g, " ")
                 .trim();
-            console.log(cleanTitle);
+            const yearMatch = file_name.match(/\b(19|20)\d{2}\b/);
+            const year = yearMatch ? yearMatch[0] : null;
+            console.log(`Clean Title: "${cleanTitle}" | Year: ${year || "N/A"}`);
             const apiKey = process.env.TMDB_API_KEY;
-            const tmdbResp = await axios.get(`https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}`);
-            const tmdbData = await tmdbResp.data;
-            console.log(tmdbData);
-            const tmdb_id = tmdbData.results?.[0]?.id || null;
+            const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}${year ? `&year=${year}` : ""}`;
+            const tmdbResp = await axios.get(tmdbUrl);
+            const results = tmdbResp.data.results || [];
+            let tmdb_id = null;
+            if (results.length > 0) {
+                const bestMatch = stringSimilarity.findBestMatch(cleanTitle.toLowerCase(), results.map((r) => r.title.toLowerCase()));
+                tmdb_id = results[bestMatch.bestMatchIndex]?.id || null;
+            }
+            console.log(`🎬 Matched TMDB ID for "${cleanTitle}": ${tmdb_id || "❌ Not found"}`);
             let VidObj = {
                 file_id,
                 file_name,
@@ -96,17 +106,32 @@ bot.on("channel_post", async (ctx) => {
             const height = null;
             const chat_id = String(ctx.channelPost.chat.id);
             const cleanTitle = file_name
-                .replace(/\[[^\]]*\]/g, "") // remove [groups]
-                .replace(/\([^\)]*\)/g, "") // remove (year) or other
-                .replace(/\d{3,4}p/gi, "") // remove 720p, 1080p, etc
-                .replace(/\b(x264|x265|BluRay|WEBRip|HEVC|AAC|DDP\S*)\b/gi, "")
-                .replace(/[^a-zA-Z0-9 ]/g, " ") // remove special chars
+                // Remove file extension
+                .replace(/\.(mkv|mp4|avi)$/i, "")
+                // Replace dots and underscores with spaces
+                .replace(/[_\.]+/g, " ")
+                // Remove common junk tags (quality, codecs, sites, etc.)
+                .replace(/\b(720p|1080p|2160p|480p|WEB\s?DL|WEB\s?Rip|BluRay|x264|x265|H\.?265|HEVC|AAC2?\.?0?|DDP\S*|ESubs?|Tagalog|Hindi|Telugu|AMZN|HDRip|10Bit|HC|DS4K|Pahe|in|GTM|MULTI|Removed|World)\b/gi, "")
+                // Remove all numbers (even years, episode numbers, etc.)
+                .replace(/\b\d+\b/g, "")
+                // Remove brackets, dashes, leftover punctuation
+                .replace(/[\(\)\[\]\-]/g, " ")
+                // Clean up extra spaces
                 .replace(/\s+/g, " ")
                 .trim();
+            const yearMatch = file_name.match(/\b(19|20)\d{2}\b/);
+            const year = yearMatch ? yearMatch[0] : null;
+            console.log(`Clean Title: "${cleanTitle}" | Year: ${year || "N/A"}`);
             const apiKey = process.env.TMDB_API_KEY;
-            const tmdbResp = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}`);
-            const tmdbData = await tmdbResp.json();
-            const tmdb_id = tmdbData.results?.[0]?.id || null;
+            const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}${year ? `&year=${year}` : ""}`;
+            const tmdbResp = await axios.get(tmdbUrl);
+            const results = tmdbResp.data.results || [];
+            let tmdb_id = null;
+            if (results.length > 0) {
+                const bestMatch = stringSimilarity.findBestMatch(cleanTitle.toLowerCase(), results.map((r) => r.title.toLowerCase()));
+                tmdb_id = results[bestMatch.bestMatchIndex]?.id || null;
+            }
+            console.log(`🎬 Matched TMDB ID for "${cleanTitle}": ${tmdb_id || "❌ Not found"}`);
             await prisma.videos.create({
                 data: {
                     file_id,
