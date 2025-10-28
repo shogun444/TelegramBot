@@ -2,7 +2,7 @@ export type Video = {
   file_id:string ,
    file_name:string , 
    duration? : number | null , 
-   file_size? :number | undefined | null,
+   file_size? :string | undefined | null,
    thumbnail ?: any,
   link? : string,
   message_id : number,

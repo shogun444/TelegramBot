@@ -19,12 +19,12 @@ model Videos{
  file_id String @unique
    file_name String 
    duration  Int? 
-   file_size  Int? @default(0)
+   file_size  String? @default("")
    thumbnail  String?
   link String?
-  message_id Int
+  message_id Int?
   chat_id String     
- telegram_link  String
+ telegram_link  String?
   mime_type  String?
   width Int?
 height Int? 
