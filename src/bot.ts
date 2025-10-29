@@ -3,11 +3,14 @@ import { Api, TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import type { Update } from "telegraf/types";
 import dotenv from "dotenv";
-import type { Video } from "./types.js";
-import { prisma } from "./prisma.js";
-import axios from "axios";
-import stringSimilarity from "string-similarity";
+import type { SeriesEpisode, Video } from "./types.js";
 
+import axios, { AxiosError } from "axios";
+import stringSimilarity from "string-similarity";
+import https from "https";
+import { seriesPrisma } from "./Prismaseries.js";
+import { prismaMovies } from "./prisma.js";
+import { getEpisodeDetails, getTvTmdbResultsWithRetry } from "./gettmdbseries.js";
 dotenv.config();
 
 // Initialize bot
@@ -17,8 +20,9 @@ export const bot: Telegraf<Context<Update>> = new Telegraf(process.env.BOT_TOKEN
 const apiId = Number(process.env.api_id);
 const apiHash = process.env.api_hash as string;
 const stringSession = new StringSession(process.env.STRING_SESSION as string);
-const channel_Id = -1003106470314;
 
+const MOVIE_CHANNEL_ID = -1003106470314;
+const SERIES_CHANNEL_ID = -1003111405410;
 // Create a Telegram user client instance (persistent)
 const userClient = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
 
@@ -59,7 +63,8 @@ bot.start(async (ctx) => {
   }
 
   const messageId = parseInt(payload, 10);
-  const video = await prisma.videos.findFirst({ where: { message_id: messageId } });
+  
+  const video = await prismaMovies.videos.findFirst({ where: { message_id: messageId } });
 
   if (!video) return ctx.reply("⚠️ Movie not found.");
 
@@ -84,10 +89,46 @@ bot.start(async (ctx) => {
     ctx.reply("⚠️ Failed to send movie.");
   }
 });
+ async function getTmdbIdWithRetry(cleanTitle: string): Promise<number | null> {
+  const apiKey = process.env.TMDB_API_KEY;
+  if (!apiKey) {
+    throw new Error("TMDB_API_KEY is not set in environment variables.");
+  }
 
+  const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}`;
+
+  const maxAttempts = 3;
+  const delayMs = 1000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await axios.get(tmdbUrl, {
+        timeout: 5000,
+        httpsAgent: new https.Agent({ keepAlive: false }),
+      });
+      const results = response.data.results || [];
+      return results.length > 0 ? results[0].id : null;
+    } catch (error) {
+      const err = error as AxiosError;
+      if (err.code === "ECONNRESET" && attempt < maxAttempts) {
+        // Wait before retrying
+        await new Promise((res) => setTimeout(res, delayMs));
+        continue;
+      }
+      // Log and rethrow for non-retryable errors or final failure
+      console.error(`[TMDB] Attempt ${attempt} failed:`, err.message);
+      throw err;
+    }
+  }
+
+  return null;
+}
 bot.on("channel_post", async (ctx) => {
   try {
-    if (ctx.channelPost && "video" in ctx.channelPost && ctx.channelPost.video) {
+     const chatId = ctx.channelPost.chat.id;
+
+ if (chatId === MOVIE_CHANNEL_ID) {
+      if (ctx.channelPost && "video" in ctx.channelPost && ctx.channelPost.video) {
       const video = ctx.channelPost.video;
       const file_id = video.file_id;
       const thumbnail = video.thumbnail?.file_id || null;
@@ -127,7 +168,7 @@ const cleanTitle = file_name
     console.log(`Clean Title: "${cleanTitle}" | Year: ${year || "N/A"}`);
          const apiKey = process.env.TMDB_API_KEY;
     const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}`;
-
+    const tmdbId = await getTmdbIdWithRetry(cleanTitle)
     const tmdbResp = await axios.get(tmdbUrl);
     const results = tmdbResp.data.results || [];
 
@@ -138,7 +179,7 @@ const cleanTitle = file_name
         cleanTitle.toLowerCase(),
         results.map((r: any) => r.title.toLowerCase())
       );
-      tmdb_id = results[bestMatch.bestMatchIndex]?.id || null;
+      tmdb_id = results[bestMatch.bestMatchIndex]?.id || null || tmdbId;
     }
 
     console.log(`🎬 Matched TMDB ID for "${cleanTitle}": ${tmdb_id || "❌ Not found"}`);
@@ -157,7 +198,7 @@ const cleanTitle = file_name
       };
 
      
-      await prisma.videos.create({
+      await prismaMovies.videos.create({
         data : {
         file_id,
           file_name,
@@ -235,7 +276,7 @@ const cleanTitle = file_name
     console.log(`🎬 Matched TMDB ID for "${cleanTitle}": ${tmdb_id || "❌ Not found"}`);
 
 
-        await prisma.videos.create({
+        await prismaMovies.videos.create({
           data: {
             file_id,
             file_name,
@@ -253,6 +294,153 @@ const cleanTitle = file_name
         });
         console.log(`Channel document saved: ${file_name}`);
       }
+    }
+
+    else if (chatId === SERIES_CHANNEL_ID) {
+     
+  if ("document" in ctx.channelPost && ctx.channelPost.document) {
+    const doc = ctx.channelPost.document;
+    const file_name = doc.file_name || "";
+    const message_id = ctx.channelPost.message_id;
+    const chat_id = String(ctx.channelPost.chat.id);
+
+    const match = file_name.match(/^(.*?)[.\s_-]+S(\d{1,2})E(\d{1,2})/i);
+
+if (!match) {
+  console.log(`❌ Could not extract series info from ${file_name}`);
+  return;
+}
+
+const seriesName = match[1];
+
+if(!seriesName) return
+// Use your cleaning logic for cleanTitle (series name)
+const cleanTitle = seriesName
+  // Remove file extension (shouldn't be needed, but for safety)
+  .replace(/\.(mkv|mp4|avi|mov|wmv|flv|m4v|mpg|mpeg)$/i, "")
+  // Replace dots and underscores with spaces
+  .replace(/[_\.]+/g, " ")
+  // Remove everything after a year or junk tag (very strict cutoff)
+  .replace(
+    /\b((19|20)\d{2}|720p|1080p|2160p|480p|4k|8k|hdr10\+?|hdr|dv|dolby|vision|dts|truehd|atmos|web\s?dl|web\s?rip|webrip|bluray|brrip|hdrip|x264|x265|hevc|h\.?265|avc|aac2?\.?0?|ddp\S*|esubs?|dual\s?audio|tagalog|hindi|telugu|tamil|malayalam|korean|japanese|amzn|nf|psa|aeencodes|yts|hq|hc|ds4k|pahe|rarbg|extended|remastered|multi|proper|repack|imax|org|world|uncut|internal|regraded|10bit|xvid|h264|plus|\+|\d+)\b.*$/gi,
+    ""
+  )
+  // Remove brackets, dashes, and leftover punctuation
+  .replace(/[\(\)\[\]\-]/g, " ")
+  // Remove trailing symbols
+  .replace(/[+\-_.!@#\$%^&*(),?\/\\]+$/g, "")
+  // Remove multiple spaces
+  .replace(/\s+/g, " ")
+  .trim();
+if (!match[2] || !match[3]) {
+  throw new Error("Regex match failed for season or episode number");
+}
+const seasonNumber = parseInt(match[2], 10);
+const episodeNumber = parseInt(match[3], 10);
+console.log(`Series: "${cleanTitle}" | Season: ${seasonNumber} | Episode: ${episodeNumber}`);
+
+const results = await getTvTmdbResultsWithRetry(cleanTitle);
+
+let tmdbSeriesId: number | null = null;
+let bestMatchSeries 
+if (results.length > 0) {
+  const bestMatch = stringSimilarity.findBestMatch(
+    cleanTitle.toLowerCase(),
+    results.map((r: any) => r.name.toLowerCase())
+  );
+  tmdbSeriesId = results[bestMatch.bestMatchIndex]?.id || null;
+   bestMatchSeries = results[bestMatch.bestMatchIndex]; 
+}
+
+if (!tmdbSeriesId) {
+  console.log(`❌ No TMDB match for series "${cleanTitle}"`);
+  return;
+}
+
+console.log(`📺 Matched TMDB Series ID for "${cleanTitle}": ${tmdbSeriesId}`);
+  const episodeData = await getEpisodeDetails(tmdbSeriesId, seasonNumber, episodeNumber);
+    // --- Compose SeriesEpisode object (type-safe) ---
+    const episodeObj: SeriesEpisode = {
+  file_id: doc.file_id,
+  file_name,
+  message_id,
+  chat_id,
+  telegram_link: `https://t.me/blake_videobot?start=${message_id}`,
+  thumbnail: doc.thumbnail?.file_id || null,
+  file_size: doc.file_size ? String(doc.file_size) : null,
+  mime_type: doc.mime_type,
+  series_name: bestMatchSeries.name, // Use name from TMDB
+  tmdb_series_id: tmdbSeriesId,
+  season_number: seasonNumber,
+  episode_number: episodeNumber,
+  tmdbEpisodeId: episodeData.id,
+  episode_title: episodeData.name,
+  episode_overview: episodeData.overview,
+  episode_air_date: episodeData.air_date,
+  episode_still: episodeData.still_path,
+  runtime: episodeData.runtime,
+};
+
+   const series = await seriesPrisma.tVSeries.upsert({
+    where: { tmdbId: episodeObj.tmdb_series_id },
+    update: {},
+    create: {
+      tmdbId: episodeObj.tmdb_series_id,
+      title: episodeObj.series_name,
+      overview: bestMatchSeries.overview, // Make sure `bestMatchSeries` is the full series object from TMDB
+      posterPath: bestMatchSeries.poster_path,
+    },
+  });
+
+  // Upsert Season
+  const season = await seriesPrisma.season.upsert({
+    where: {
+      seriesId_seasonNumber: {
+        seriesId: series.id,
+        seasonNumber: episodeObj.season_number,
+      },
+    },
+    update: {},
+    create: {
+      seriesId: series.id,
+      seasonNumber: episodeObj.season_number,
+    },
+  });
+
+  // =================================================================
+  //  FIX: Create Episode with ALL the details from episodeObj
+  // =================================================================
+  await seriesPrisma.episode.create({
+    data: {
+
+      // Link to the season
+      season: { connect: { id: season.id } },
+
+      episodeNumber: episodeObj.episode_number,
+    tmdbEpisodeId: episodeObj.tmdbEpisodeId,
+
+    // optional fields: convert undefined -> null to match Prisma types
+    telegramLink: episodeObj.telegram_link ?? null,
+    title:        episodeObj.episode_title ?? null,
+    overview:     episodeObj.episode_overview ?? null,
+    runtime:      episodeObj.runtime ?? null,
+    stillPath:    episodeObj.episode_still ?? null,
+    airDate:      episodeObj.episode_air_date ? new Date(episodeObj.episode_air_date) : null,
+    },
+  });
+  // =================================================================
+
+  console.log(
+    `✅ Episode added: ${episodeObj.series_name} S${episodeObj.season_number}E${episodeObj.episode_number}`
+  );
+  }
+}
+
+   else {
+      console.log(`⚠️ Unknown channel: ${chatId}`);
+    }
+
+    
 
   } catch (error) {
     console.log(error);

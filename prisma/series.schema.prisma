@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator seriesClient {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma/series-client"
+}
+
+datasource db1 {
+  provider = "postgresql"
+  url      = env("TVSERIES_URL")
+}
+
+model TVSeries {
+  id          Int        @id @default(autoincrement())
+  tmdbId      Int        @unique
+  title       String
+  overview    String?
+  posterPath  String?
+  backdropPath String?
+  releaseDate DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  seasons     Season[]
+}
+
+model Season {
+  id         Int        @id @default(autoincrement())
+  seasonNumber Int
+  tmdbId     Int?
+  title      String?
+  overview   String?
+  airDate    DateTime?
+  posterPath String?
+  createdAt  DateTime   @default(now())
+
+  // Relation
+  series     TVSeries   @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  seriesId   Int
+
+  episodes   Episode[]
+  @@unique([seriesId, seasonNumber])
+}
+
+model Episode {
+  id           Int        @id @default(autoincrement())
+  episodeNumber Int
+  tmdbEpisodeId       Int @unique
+  
+  title        String?
+  overview     String?
+  airDate      DateTime?
+  runtime      Int?
+  telegramLink String?    // Link to your Telegram file/post
+  stillPath     String?
+  // Relation
+  season       Season     @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  seasonId     Int
+}
