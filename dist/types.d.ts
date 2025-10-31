@@ -24,6 +24,7 @@ export type SeriesEpisode = {
     mime_type?: string | undefined;
     series_name: string;
     tmdb_series_id: number;
+    tmdb_season_id: number | null;
     season_number: number;
     episode_number: number;
     width?: number | null;

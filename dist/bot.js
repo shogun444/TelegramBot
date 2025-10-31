@@ -4,10 +4,9 @@ import { StringSession } from "telegram/sessions/index.js";
 import dotenv from "dotenv";
 import axios, { AxiosError } from "axios";
 import stringSimilarity from "string-similarity";
-import https from "https";
 import { seriesPrisma } from "./Prismaseries.js";
 import { prismaMovies } from "./prisma.js";
-import { getEpisodeDetails, getTvTmdbResultsWithRetry } from "./gettmdbseries.js";
+import { getEpisodeDetails, getTmdbIdWithRetry, getTvSeriesIdByNameWithRetry, getTvTmdbResultsWithRetry } from "./gettmdbseries.js";
 dotenv.config();
 // Initialize bot
 export const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -40,7 +39,6 @@ async function sendLargeVideo(toUser, video) {
     }));
     console.log(`✅ Sent large movie "${movieTitle}" to ${toUser}`);
 }
-// ⚡ Bot logic
 bot.start(async (ctx) => {
     const payload = ctx.startPayload;
     const userId = ctx.from.id;
@@ -48,62 +46,61 @@ bot.start(async (ctx) => {
         return ctx.reply("🎬 Welcome! Please select a movie from our website.");
     }
     const messageId = parseInt(payload, 10);
-    const video = await prismaMovies.videos.findFirst({ where: { message_id: messageId } });
-    if (!video)
-        return ctx.reply("⚠️ Movie not found.");
+    if (Number.isNaN(messageId)) {
+        return ctx.reply("Invalid Payload");
+    }
+    // ⚡ Immediately respond — gives user feedback
+    const searchingMsg = await ctx.reply(`🔍 Searching For Your Request... \nThis might take a moment. Please Wait! `);
+    // --- Fetch movie or series ---
+    const video = await prismaMovies.videos.findFirst({
+        where: { message_id: messageId, chat_id: String(MOVIE_CHANNEL_ID) },
+    });
+    const SeriesEpisode = video
+        ? null
+        : await seriesPrisma.episode.findFirst({
+            where: { message_id: messageId, chat_id: String(SERIES_CHANNEL_ID) },
+        });
+    if (!video && !SeriesEpisode) {
+        await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "⚠️ Movie not found.");
+        return;
+    }
+    const record = video
+        ? {
+            filesize: video.file_size,
+            filename: video.file_name,
+            fileid: video.file_id ?? null,
+        }
+        : {
+            filesize: SeriesEpisode?.filesize ?? null,
+            filename: SeriesEpisode?.title ?? null,
+            fileid: SeriesEpisode?.file_id ?? null,
+        };
     try {
-        const size = Number(video.file_size || 0);
-        const movieTitle = video.file_name.replace(/\.[^/.]+$/, "");
+        if (!record.filename) {
+            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "⚠️ File name is missing.");
+            return;
+        }
+        const size = Number(record.filesize || 0);
+        const movieTitle = record.filename.replace(/\.[^/.]+$/, "");
         if (size > 2000 * 1024 * 1024) {
-            // >2GB => user account
+            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "🎥 Sending via user client (file > 2GB)...");
             await sendLargeVideo(userId, video);
-            return ctx.reply("🎥 Sent via user client (file > 2GB)");
+            return ctx.reply("✅ Sent successfully!");
         }
         else {
-            // <=2GB => bot directly
-            await ctx.telegram.sendVideo(userId, video.file_id, {
+            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "🎬 Sending...");
+            await ctx.telegram.sendVideo(userId, String(record.fileid), {
                 caption: movieTitle,
                 supports_streaming: true,
             });
-            return ctx.reply("🎬 Movie sent!");
+            return ctx.reply("🎬 Enjoy !");
         }
     }
     catch (err) {
         console.error("❌ Failed to send:", err);
-        ctx.reply("⚠️ Failed to send movie.");
+        await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "⚠️ Failed to send movie.");
     }
 });
-async function getTmdbIdWithRetry(cleanTitle) {
-    const apiKey = process.env.TMDB_API_KEY;
-    if (!apiKey) {
-        throw new Error("TMDB_API_KEY is not set in environment variables.");
-    }
-    const tmdbUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(cleanTitle)}`;
-    const maxAttempts = 3;
-    const delayMs = 1000;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-            const response = await axios.get(tmdbUrl, {
-                timeout: 5000,
-                httpsAgent: new https.Agent({ keepAlive: false }),
-            });
-            const results = response.data.results || [];
-            return results.length > 0 ? results[0].id : null;
-        }
-        catch (error) {
-            const err = error;
-            if (err.code === "ECONNRESET" && attempt < maxAttempts) {
-                // Wait before retrying
-                await new Promise((res) => setTimeout(res, delayMs));
-                continue;
-            }
-            // Log and rethrow for non-retryable errors or final failure
-            console.error(`[TMDB] Attempt ${attempt} failed:`, err.message);
-            throw err;
-        }
-    }
-    return null;
-}
 bot.on("channel_post", async (ctx) => {
     try {
         const chatId = ctx.channelPost.chat.id;
@@ -283,6 +280,8 @@ bot.on("channel_post", async (ctx) => {
                     console.log(`❌ No TMDB match for series "${cleanTitle}"`);
                     return;
                 }
+                const seasonDetails = await getTvSeriesIdByNameWithRetry(tmdbSeriesId, seasonNumber);
+                const tmdbSeasonId = seasonDetails;
                 console.log(`📺 Matched TMDB Series ID for "${cleanTitle}": ${tmdbSeriesId}`);
                 const episodeData = await getEpisodeDetails(tmdbSeriesId, seasonNumber, episodeNumber);
                 // --- Compose SeriesEpisode object (type-safe) ---
@@ -293,7 +292,7 @@ bot.on("channel_post", async (ctx) => {
                     chat_id,
                     telegram_link: `https://t.me/blake_videobot?start=${message_id}`,
                     thumbnail: doc.thumbnail?.file_id || null,
-                    file_size: doc.file_size ? String(doc.file_size) : null,
+                    file_size: doc.file_size != null ? String(doc.file_size) : null,
                     mime_type: doc.mime_type,
                     series_name: bestMatchSeries.name, // Use name from TMDB
                     tmdb_series_id: tmdbSeriesId,
@@ -305,6 +304,7 @@ bot.on("channel_post", async (ctx) => {
                     episode_air_date: episodeData.air_date,
                     episode_still: episodeData.still_path,
                     runtime: episodeData.runtime,
+                    tmdb_season_id: seasonDetails
                 };
                 const series = await seriesPrisma.tVSeries.upsert({
                     where: { tmdbId: episodeObj.tmdb_series_id },
@@ -312,6 +312,7 @@ bot.on("channel_post", async (ctx) => {
                     create: {
                         tmdbId: episodeObj.tmdb_series_id,
                         title: episodeObj.series_name,
+                        chat_id: chat_id,
                         overview: bestMatchSeries.overview, // Make sure `bestMatchSeries` is the full series object from TMDB
                         posterPath: bestMatchSeries.poster_path,
                     },
@@ -326,7 +327,9 @@ bot.on("channel_post", async (ctx) => {
                     },
                     update: {},
                     create: {
+                        tmdbId: tmdbSeasonId,
                         seriesId: series.id,
+                        chat_id: chat_id,
                         seasonNumber: episodeObj.season_number,
                     },
                 });
@@ -337,11 +340,15 @@ bot.on("channel_post", async (ctx) => {
                     data: {
                         // Link to the season
                         season: { connect: { id: season.id } },
+                        chat_id: chat_id,
+                        file_id: episodeObj.file_id,
                         episodeNumber: episodeObj.episode_number,
                         tmdbEpisodeId: episodeObj.tmdbEpisodeId,
+                        filesize: episodeObj.file_size ?? null,
+                        message_id: message_id,
                         // optional fields: convert undefined -> null to match Prisma types
                         telegramLink: episodeObj.telegram_link ?? null,
-                        title: episodeObj.episode_title ?? null,
+                        title: episodeObj.series_name + ' ' + ' S' + episodeObj.season_number + 'E' + episodeObj.episode_number + ' ' + episodeObj.episode_title,
                         overview: episodeObj.episode_overview ?? null,
                         runtime: episodeObj.runtime ?? null,
                         stillPath: episodeObj.episode_still ?? null,

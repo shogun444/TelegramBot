@@ -17,6 +17,7 @@ datasource db1 {
 model TVSeries {
   id          Int        @id @default(autoincrement())
   tmdbId      Int        @unique
+  chat_id      String
   title       String
   overview    String?
   posterPath  String?
@@ -31,6 +32,7 @@ model TVSeries {
 model Season {
   id         Int        @id @default(autoincrement())
   seasonNumber Int
+  chat_id      String
   tmdbId     Int?
   title      String?
   overview   String?
@@ -49,15 +51,20 @@ model Season {
 model Episode {
   id           Int        @id @default(autoincrement())
   episodeNumber Int
-  tmdbEpisodeId       Int @unique
-  
+  tmdbEpisodeId       Int 
+  chat_id      String
+  file_id String
   title        String?
   overview     String?
+  filesize      String? @default("")
   airDate      DateTime?
   runtime      Int?
+  message_id Int?
   telegramLink String?    // Link to your Telegram file/post
   stillPath     String?
   // Relation
   season       Season     @relation(fields: [seasonId], references: [id], onDelete: Cascade)
   seasonId     Int
+   @@index([tmdbEpisodeId])                 // quick lookup by TMDB episode id
+  @@index([seasonId, episodeNumber])       // common query pattern
 }

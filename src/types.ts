@@ -26,6 +26,7 @@ export type SeriesEpisode = {
   // TV-specific fields
   series_name: string;
   tmdb_series_id: number;
+  tmdb_season_id : number | null
   season_number: number;
   episode_number: number;
   // You may want to add these if you store them
