@@ -50,7 +50,7 @@ bot.start(async (ctx) => {
         return ctx.reply("Invalid Payload");
     }
     // ⚡ Immediately respond — gives user feedback
-    const searchingMsg = await ctx.reply(`🔍 Searching For Your Request... \nThis might take a moment. Please Wait! `);
+    const searchingMsg = await ctx.reply(`🔍 Searching For Your Request...\n Please Wait! `);
     // --- Fetch movie or series ---
     const video = await prismaMovies.videos.findFirst({
         where: { message_id: messageId, chat_id: String(MOVIE_CHANNEL_ID) },
@@ -83,16 +83,21 @@ bot.start(async (ctx) => {
         const size = Number(record.filesize || 0);
         const movieTitle = record.filename.replace(/\.[^/.]+$/, "");
         if (size > 2000 * 1024 * 1024) {
-            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "🎥 Sending via user client (file > 2GB)...");
+            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "🎥 Sending via client (file > 2GB)...");
             await sendLargeVideo(userId, video);
             return ctx.reply("✅ Sent successfully!");
         }
         else {
-            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "🎬 Sending...");
+            await ctx.telegram.editMessageText(ctx.chat.id, searchingMsg.message_id, undefined, "Sending...");
             await ctx.telegram.sendVideo(userId, String(record.fileid), {
                 caption: movieTitle,
                 supports_streaming: true,
             });
+            try {
+                await ctx.telegram.deleteMessage(ctx.chat.id, searchingMsg.message_id);
+            }
+            catch (e) {
+            }
             return ctx.reply("🎬 Enjoy !");
         }
     }

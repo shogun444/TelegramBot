@@ -136,6 +136,12 @@ bot.start(async (ctx) => {
         caption: movieTitle,
         supports_streaming: true,
       });
+      try {
+        await ctx.telegram.deleteMessage(ctx.chat.id, searchingMsg.message_id)
+      }
+      catch(e){
+        
+      }
       return ctx.reply("🎬 Enjoy !");
     }
   } catch (err) {
